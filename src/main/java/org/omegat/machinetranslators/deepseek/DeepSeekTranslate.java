@@ -10,8 +10,6 @@ import java.util.TreeMap;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.jspecify.annotations.NullMarked;
-import org.jspecify.annotations.Nullable;
 
 import org.omegat.core.machinetranslators.BaseCachedTranslate;
 import org.omegat.core.machinetranslators.BaseTranslate;
@@ -22,7 +20,6 @@ import org.omegat.util.Language;
 import org.omegat.util.Log;
 import org.omegat.util.Preferences;
 
-@NullMarked
 @SuppressWarnings("unused")
 public class DeepSeekTranslate extends BaseCachedTranslate {
 
@@ -58,7 +55,7 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     }
 
     @Override
-    protected @Nullable String translate(Language sLang, Language tLang, String text) throws Exception {
+    protected String translate(Language sLang, Language tLang, String text) throws Exception {
         String apiKey = getApiKey();
         if (apiKey.isEmpty()) {
             throw new MachineTranslateError(BUNDLE.getString("MT_ENGINE_DEEPSEEK_API_KEY_NOTFOUND"));

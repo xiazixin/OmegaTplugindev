@@ -3,6 +3,7 @@ package org.omegat.machinetranslators.deepseek;
 import static org.junit.Assert.assertEquals;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.omegat.core.machinetranslators.MachineTranslateError;
@@ -10,6 +11,11 @@ import org.omegat.util.Language;
 import org.omegat.util.Preferences;
 
 public class DeepSeekTranslateTest {
+
+    @BeforeClass
+    public static void initPreferences() {
+        Preferences.init();
+    }
 
     @Test
     public void createJsonRequest() throws Exception {
@@ -20,8 +26,8 @@ public class DeepSeekTranslateTest {
         String json = translate.createJsonRequest(new Language("EN"), new Language("DE"), "Hello world");
 
         String expected = "{"
-                + "\"messages\":["
-                + "{\"content\":\"You are a professional translation engine for OmegaT. Translate from EN to DE. Preserve tags, placeholders, and line breaks. Return only the translated text.\",\"role\":\"system\"},"
+            + "\"messages\":["
+            + "{\"content\":\"You are a professional translation engine for OmegaT. Translate from en to de. Preserve tags, placeholders, and line breaks. Return only the translated text.\",\"role\":\"system\"},"
                 + "{\"content\":\"Hello world\",\"role\":\"user\"}],"
                 + "\"model\":\"deepseek-v4-flash\","
                 + "\"stream\":false,"

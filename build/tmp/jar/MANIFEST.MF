@@ -1,0 +1,12 @@
+Manifest-Version: 1.0
+Plugin-Name: DeepSeek Translator
+OmegaT-Plugins: org.omegat.machinetranslators.deepseek.DeepSeekPlugin
+Plugin-Author: Copilot
+Plugin-Description: OmegaT machine translation connector for the DeepSee
+ k API.
+Plugin-Version: 1.0.0
+Plugin-Link: https://example.com/deepseek-omegat-plugin
+Plugin-Category: machinetranslator
+Created-By: 21.0.4 (Eclipse Adoptium)
+Plugin-Date: 2026-06-14T17:02:23+0800
+
