@@ -21,6 +21,7 @@ public class DeepSeekTranslateTest {
     public void createJsonRequest() throws Exception {
         Preferences.setPreference(DeepSeekTranslate.ALLOW_DEEPSEEK_TRANSLATE, true);
         Preferences.setPreference(DeepSeekTranslate.PROPERTY_MODEL, "deepseek-v4-flash");
+        Preferences.setPreference(DeepSeekTranslate.PROPERTY_TEMPERATURE, "0.3");
 
         DeepSeekTranslate translate = new DeepSeekTranslate();
         String json = translate.createJsonRequest(new Language("EN"), new Language("DE"), "Hello world");
@@ -31,7 +32,7 @@ public class DeepSeekTranslateTest {
                 + "{\"content\":\"Hello world\",\"role\":\"user\"}],"
                 + "\"model\":\"deepseek-v4-flash\","
                 + "\"stream\":false,"
-                + "\"temperature\":0.0}";
+                + "\"temperature\":0.3}";
 
         ObjectMapper mapper = new ObjectMapper();
         assertEquals(mapper.readTree(expected), mapper.readTree(json));

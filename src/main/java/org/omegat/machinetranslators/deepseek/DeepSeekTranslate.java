@@ -1,14 +1,22 @@
 package org.omegat.machinetranslators.deepseek;
 
+import java.awt.BorderLayout;
 import java.awt.GridBagConstraints;
 import java.awt.Window;
 import java.util.ArrayList;
+import java.util.Dictionary;
+import java.util.Hashtable;
 import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
 import java.util.TreeMap;
 
+import javax.swing.BorderFactory;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JSlider;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -30,12 +38,18 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     public static final String PROPERTY_API_KEY = "deepseek.api.key";
     public static final String PROPERTY_MODEL = "deepseek.api.model";
     public static final String PROPERTY_URL = "deepseek.api.url";
+    public static final String PROPERTY_TEMPERATURE = "deepseek.api.temperature";
+    public static final String PROPERTY_DYNAMIC_TEMPERATURE = "deepseek.api.dynamic_temperature";
 
     private static final String MODEL_DEEPSEEK_V4_PRO = "deepseek-v4-pro";
     private static final String MODEL_DEEPSEEK_V4_FLASH = "deepseek-v4-flash";
     private static final String[] AVAILABLE_MODELS = { MODEL_DEEPSEEK_V4_PRO, MODEL_DEEPSEEK_V4_FLASH };
     private static final String DEFAULT_MODEL = MODEL_DEEPSEEK_V4_FLASH;
     private static final String DEFAULT_URL = "https://api.deepseek.com";
+    private static final double DEFAULT_TEMPERATURE = 0.3;
+    private static final int TEMPERATURE_MIN = 0;
+    private static final int TEMPERATURE_MAX = 20;
+    private static final int TEMPERATURE_DEFAULT_SLIDER = 3;
     private static final String CHAT_COMPLETIONS_PATH = "/chat/completions";
     private static final String BUNDLE_BASENAME = "org.omegat.machinetranslators.deepseek.Bundle";
     private static final ResourceBundle BUNDLE = ResourceBundle.getBundle(BUNDLE_BASENAME);
@@ -93,15 +107,55 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         JComboBox<String> modelComboBox = new JComboBox<>(AVAILABLE_MODELS);
         modelComboBox.setSelectedItem(getModel());
 
+        boolean dynamicTemp = isDynamicTemperature();
+
+        // Slider sub-panel (label + slider)
+        JPanel sliderPanel = new JPanel(new BorderLayout(5, 0));
+        JLabel tempLabel = new JLabel(BUNDLE.getString("MT_ENGINE_DEEPSEEK_TEMPERATURE_LABEL"));
+
+        // Temperature slider: 0-20 represents 0.0-2.0 in 0.1 steps
+        JSlider temperatureSlider = new JSlider(TEMPERATURE_MIN, TEMPERATURE_MAX,
+                temperatureToSlider(getTemperature()));
+        temperatureSlider.setMajorTickSpacing(5);
+        temperatureSlider.setMinorTickSpacing(1);
+        temperatureSlider.setPaintTicks(true);
+        temperatureSlider.setPaintLabels(true);
+        temperatureSlider.setSnapToTicks(true);
+        @SuppressWarnings("UseOfObsoleteCollectionType")
+        Dictionary<Integer, JLabel> tempLabels = new Hashtable<>();
+        tempLabels.put(0, new JLabel("0.0"));
+        tempLabels.put(5, new JLabel("0.5"));
+        tempLabels.put(10, new JLabel("1.0"));
+        tempLabels.put(15, new JLabel("1.5"));
+        tempLabels.put(20, new JLabel("2.0"));
+        temperatureSlider.setLabelTable(tempLabels);
+
+        sliderPanel.add(tempLabel, BorderLayout.WEST);
+        sliderPanel.add(temperatureSlider, BorderLayout.CENTER);
+        sliderPanel.setVisible(!dynamicTemp);
+
+        // Dynamic temperature checkbox
+        JCheckBox dynamicCheckBox = new JCheckBox(
+                BUNDLE.getString("MT_ENGINE_DEEPSEEK_DYNAMIC_TEMPERATURE_LABEL"));
+        dynamicCheckBox.setSelected(dynamicTemp);
+        dynamicCheckBox.addActionListener(e -> {
+            sliderPanel.setVisible(!dynamicCheckBox.isSelected());
+            sliderPanel.getParent().revalidate();
+        });
+
         MTConfigDialog dialog = new MTConfigDialog(parent, getName()) {
             @Override
             protected void onConfirm() {
                 boolean temporary = panel.temporaryCheckBox.isSelected();
                 String apiKey = panel.valueField1.getText().trim();
                 String model = modelComboBox.getSelectedItem().toString();
+                double temperature = sliderToTemperature(temperatureSlider.getValue());
+                boolean dynamic = dynamicCheckBox.isSelected();
 
                 setCredential(PROPERTY_API_KEY, apiKey, temporary);
                 Preferences.setPreference(PROPERTY_MODEL, model);
+                Preferences.setPreference(PROPERTY_TEMPERATURE, String.valueOf(temperature));
+                Preferences.setPreference(PROPERTY_DYNAMIC_TEMPERATURE, dynamic);
                 clearCache();
             }
         };
@@ -121,6 +175,13 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         credentialsPanel.revalidate();
         credentialsPanel.repaint();
 
+        // Add temperature panel below credentials
+        JPanel temperaturePanel = new JPanel(new BorderLayout(5, 0));
+        temperaturePanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 10, 0));
+        temperaturePanel.add(dynamicCheckBox, BorderLayout.NORTH);
+        temperaturePanel.add(sliderPanel, BorderLayout.CENTER);
+        dialog.panel.itemsPanel.add(temperaturePanel);
+
         dialog.show();
     }
 
@@ -129,7 +190,9 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         request.put("messages", createMessages(sLang, tLang, text));
         request.put("model", getModel());
         request.put("stream", false);
-        request.put("temperature", 0.0d);
+        if (!isDynamicTemperature()) {
+            request.put("temperature", getTemperature());
+        }
 
         return MAPPER.writeValueAsString(request);
     }
@@ -185,6 +248,29 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     private String getBaseUrl() {
         String baseUrl = System.getProperty(PROPERTY_URL, Preferences.getPreferenceDefault(PROPERTY_URL, DEFAULT_URL));
         return baseUrl.isEmpty() ? DEFAULT_URL : baseUrl;
+    }
+
+    private double getTemperature() {
+        String temp = Preferences.getPreferenceDefault(PROPERTY_TEMPERATURE,
+                String.valueOf(DEFAULT_TEMPERATURE));
+        try {
+            return Double.parseDouble(temp);
+        } catch (NumberFormatException e) {
+            Log.log(e);
+            return DEFAULT_TEMPERATURE;
+        }
+    }
+
+    private boolean isDynamicTemperature() {
+        return Preferences.isPreference(PROPERTY_DYNAMIC_TEMPERATURE);
+    }
+
+    private static int temperatureToSlider(double temperature) {
+        return (int) Math.round(temperature * 10.0);
+    }
+
+    private static double sliderToTemperature(int sliderValue) {
+        return sliderValue / 10.0;
     }
 
     private static List<Map<String, String>> createMessages(Language sLang, Language tLang, String text) {
