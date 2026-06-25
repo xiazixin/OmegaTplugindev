@@ -3,13 +3,12 @@ package org.omegat.machinetranslators.deepseek;
 import java.awt.BorderLayout;
 import java.awt.GridBagConstraints;
 import java.awt.Window;
-import java.util.ArrayList;
-import java.util.Dictionary;
+import java.util.Arrays;
 import java.util.Hashtable;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
-import java.util.TreeMap;
 
 import javax.swing.BorderFactory;
 import javax.swing.JCheckBox;
@@ -31,7 +30,6 @@ import org.omegat.util.Language;
 import org.omegat.util.Log;
 import org.omegat.util.Preferences;
 
-@SuppressWarnings("unused")
 public class DeepSeekTranslate extends BaseCachedTranslate {
 
     public static final String ALLOW_DEEPSEEK_TRANSLATE = "allow_deepseek_translate";
@@ -56,7 +54,6 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public DeepSeekTranslate() {
-        super();
     }
 
     @Override
@@ -82,7 +79,7 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         }
 
         String request = createJsonRequest(sLang, tLang, text);
-        Map<String, String> headers = new TreeMap<>();
+        Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Authorization", "Bearer " + apiKey);
 
         String response;
@@ -121,8 +118,7 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         temperatureSlider.setPaintTicks(true);
         temperatureSlider.setPaintLabels(true);
         temperatureSlider.setSnapToTicks(true);
-        @SuppressWarnings("UseOfObsoleteCollectionType")
-        Dictionary<Integer, JLabel> tempLabels = new Hashtable<>();
+        Hashtable<Integer, JLabel> tempLabels = new Hashtable<>();
         tempLabels.put(0, new JLabel("0.0"));
         tempLabels.put(5, new JLabel("0.5"));
         tempLabels.put(10, new JLabel("1.0"));
@@ -186,7 +182,7 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     }
 
     protected String createJsonRequest(Language sLang, Language tLang, String text) throws JsonProcessingException {
-        Map<String, Object> request = new TreeMap<>();
+        Map<String, Object> request = new LinkedHashMap<>();
         request.put("messages", createMessages(sLang, tLang, text));
         request.put("model", getModel());
         request.put("stream", false);
@@ -274,14 +270,13 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     }
 
     private static List<Map<String, String>> createMessages(Language sLang, Language tLang, String text) {
-        List<Map<String, String>> messages = new ArrayList<>();
-        messages.add(message("system", buildSystemPrompt(sLang, tLang)));
-        messages.add(message("user", text));
-        return messages;
+        return Arrays.asList(
+                message("system", buildSystemPrompt(sLang, tLang)),
+                message("user", text));
     }
 
     private static Map<String, String> message(String role, String content) {
-        Map<String, String> message = new TreeMap<>();
+        Map<String, String> message = new LinkedHashMap<>();
         message.put("role", role);
         message.put("content", content);
         return message;
@@ -295,10 +290,7 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
     private static String describeLanguage(Language language) {
         String locale = language.getLocaleCode();
-        if (locale != null && !locale.isEmpty()) {
-            return locale.replace('_', '-');
-        }
-        return language.getLanguageCode();
+        return (locale != null && !locale.isEmpty()) ? locale.replace('_', '-') : language.getLanguageCode();
     }
 
     private static String extractErrorMessage(String json) {
