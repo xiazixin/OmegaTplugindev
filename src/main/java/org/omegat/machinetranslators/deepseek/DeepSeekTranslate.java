@@ -3,6 +3,11 @@ package org.omegat.machinetranslators.deepseek;
 import java.awt.BorderLayout;
 import java.awt.GridBagConstraints;
 import java.awt.Window;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Dictionary;
 import java.util.Hashtable;
@@ -22,6 +27,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import org.omegat.core.Core;
 import org.omegat.core.machinetranslators.BaseCachedTranslate;
 import org.omegat.core.machinetranslators.BaseTranslate;
 import org.omegat.core.machinetranslators.MachineTranslateError;
@@ -40,6 +46,17 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     public static final String PROPERTY_URL = "deepseek.api.url";
     public static final String PROPERTY_TEMPERATURE = "deepseek.api.temperature";
     public static final String PROPERTY_DYNAMIC_TEMPERATURE = "deepseek.api.dynamic_temperature";
+    public static final String PROPERTY_GLOSSARY_MODE = "deepseek.api.glossary.mode";
+
+    /** Glossary disabled */
+    public static final int GLOSSARY_MODE_NONE = 0;
+    /** Glossary as reference — AI uses judgment, does not blindly follow */
+    public static final int GLOSSARY_MODE_REFERENCE = 1;
+    /** Glossary as strict rules — AI must use the exact glossary translation */
+    public static final int GLOSSARY_MODE_STRICT = 2;
+
+    private static final int GLOSSARY_MODE_DEFAULT = GLOSSARY_MODE_NONE;
+    private static final int GLOSSARY_MAX_ENTRIES = 20;
 
     private static final String MODEL_DEEPSEEK_V4_PRO = "deepseek-v4-pro";
     private static final String MODEL_DEEPSEEK_V4_FLASH = "deepseek-v4-flash";
@@ -109,6 +126,15 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
         boolean dynamicTemp = isDynamicTemperature();
 
+        // Glossary mode combo box (created before dialog for onConfirm capture)
+        int glossaryMode = getGlossaryMode();
+        JComboBox<String> glossaryComboBox = new JComboBox<>(new String[] {
+            BUNDLE.getString("MT_ENGINE_DEEPSEEK_GLOSSARY_MODE_NONE"),
+            BUNDLE.getString("MT_ENGINE_DEEPSEEK_GLOSSARY_MODE_REFERENCE"),
+            BUNDLE.getString("MT_ENGINE_DEEPSEEK_GLOSSARY_MODE_STRICT")
+        });
+        glossaryComboBox.setSelectedIndex(glossaryMode);
+
         // Slider sub-panel (label + slider)
         JPanel sliderPanel = new JPanel(new BorderLayout(5, 0));
         JLabel tempLabel = new JLabel(BUNDLE.getString("MT_ENGINE_DEEPSEEK_TEMPERATURE_LABEL"));
@@ -151,11 +177,13 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
                 String model = modelComboBox.getSelectedItem().toString();
                 double temperature = sliderToTemperature(temperatureSlider.getValue());
                 boolean dynamic = dynamicCheckBox.isSelected();
+                int glossaryModeIdx = glossaryComboBox.getSelectedIndex();
 
                 setCredential(PROPERTY_API_KEY, apiKey, temporary);
                 Preferences.setPreference(PROPERTY_MODEL, model);
                 Preferences.setPreference(PROPERTY_TEMPERATURE, String.valueOf(temperature));
                 Preferences.setPreference(PROPERTY_DYNAMIC_TEMPERATURE, dynamic);
+                Preferences.setPreference(PROPERTY_GLOSSARY_MODE, glossaryModeIdx);
                 clearCache();
             }
         };
@@ -181,6 +209,14 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         temperaturePanel.add(dynamicCheckBox, BorderLayout.NORTH);
         temperaturePanel.add(sliderPanel, BorderLayout.CENTER);
         dialog.panel.itemsPanel.add(temperaturePanel);
+
+        // Glossary mode panel
+        JPanel glossaryPanel = new JPanel(new BorderLayout(5, 0));
+        glossaryPanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 10, 0));
+        JLabel glossaryLabel = new JLabel(BUNDLE.getString("MT_ENGINE_DEEPSEEK_GLOSSARY_MODE_LABEL"));
+        glossaryPanel.add(glossaryLabel, BorderLayout.NORTH);
+        glossaryPanel.add(glossaryComboBox, BorderLayout.CENTER);
+        dialog.panel.itemsPanel.add(glossaryPanel);
 
         dialog.show();
     }
@@ -265,6 +301,10 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         return Preferences.isPreference(PROPERTY_DYNAMIC_TEMPERATURE);
     }
 
+    private int getGlossaryMode() {
+        return Preferences.getPreferenceDefault(PROPERTY_GLOSSARY_MODE, GLOSSARY_MODE_DEFAULT);
+    }
+
     private static int temperatureToSlider(double temperature) {
         return (int) Math.round(temperature * 10.0);
     }
@@ -273,9 +313,9 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         return sliderValue / 10.0;
     }
 
-    private static List<Map<String, String>> createMessages(Language sLang, Language tLang, String text) {
+    private List<Map<String, String>> createMessages(Language sLang, Language tLang, String text) {
         List<Map<String, String>> messages = new ArrayList<>();
-        messages.add(message("system", buildSystemPrompt(sLang, tLang)));
+        messages.add(message("system", buildSystemPrompt(sLang, tLang, text)));
         messages.add(message("user", text));
         return messages;
     }
@@ -287,10 +327,21 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         return message;
     }
 
-    private static String buildSystemPrompt(Language sLang, Language tLang) {
-        return "You are a professional translation engine for OmegaT. Translate from "
-                + describeLanguage(sLang) + " to " + describeLanguage(tLang)
-                + ". Preserve tags, placeholders, and line breaks. Return only the translated text.";
+    private String buildSystemPrompt(Language sLang, Language tLang, String text) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("You are a professional translation engine for OmegaT. Translate from ")
+            .append(describeLanguage(sLang)).append(" to ").append(describeLanguage(tLang))
+            .append(". Preserve tags, placeholders, and line breaks. Return only the translated text.");
+
+        int glossaryMode = getGlossaryMode();
+        if (glossaryMode != GLOSSARY_MODE_NONE) {
+            List<GlossaryEntry> matching = findMatchingEntries(text);
+            if (!matching.isEmpty()) {
+                prompt.append(formatGlossaryPrompt(matching, glossaryMode));
+            }
+        }
+
+        return prompt.toString();
     }
 
     private static String describeLanguage(Language language) {
@@ -315,5 +366,115 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
             Log.log(e);
         }
         return BUNDLE.getString("MT_ENGINE_DEEPSEEK_BAD_RESPONSE");
+    }
+
+    // -------------------------------------------------------------------------
+    // Glossary support
+    // -------------------------------------------------------------------------
+
+    /**
+     * Immutable glossary entry: source term → target term with optional comment.
+     */
+    private static class GlossaryEntry {
+        final String source;
+        final String target;
+        final String comment;
+
+        GlossaryEntry(String source, String target, String comment) {
+            this.source = source;
+            this.target = target;
+            this.comment = comment != null ? comment : "";
+        }
+    }
+
+    /**
+     * Reads all glossary entries from the OmegaT project's glossary folder.
+     * Returns an empty list when no project is open or no glossary files exist.
+     */
+    private static List<GlossaryEntry> readGlossaryEntries() {
+        List<GlossaryEntry> entries = new ArrayList<>();
+        try {
+            if (Core.getProject() == null) return entries;
+            String glossaryRoot = Core.getProject().getProjectProperties().getGlossaryRoot();
+            if (glossaryRoot == null || glossaryRoot.isEmpty()) return entries;
+
+            File glossaryDir = new File(glossaryRoot);
+            if (!glossaryDir.isDirectory()) return entries;
+
+            File[] files = glossaryDir.listFiles((dir, name) ->
+                name.endsWith(".txt") || name.endsWith(".csv")
+                    || name.endsWith(".tab") || name.endsWith(".utf8"));
+            if (files == null) return entries;
+
+            for (File file : files) {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty() || line.startsWith("#")) continue;
+                        String[] parts = line.split("\t", 3);
+                        if (parts.length >= 2) {
+                            String source = parts[0].trim();
+                            String target = parts[1].trim();
+                            String comment = parts.length >= 3 ? parts[2].trim() : "";
+                            if (!source.isEmpty() && !target.isEmpty()) {
+                                entries.add(new GlossaryEntry(source, target, comment));
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.log(e);
+        }
+        return entries;
+    }
+
+    /**
+     * Finds glossary entries whose source term appears in the given text.
+     * Entries are sorted by source length descending (more specific first)
+     * and limited to {@link #GLOSSARY_MAX_ENTRIES}.
+     */
+    private static List<GlossaryEntry> findMatchingEntries(String text) {
+        List<GlossaryEntry> all = readGlossaryEntries();
+        List<GlossaryEntry> matching = new ArrayList<>();
+        String lowerText = text.toLowerCase();
+        for (GlossaryEntry entry : all) {
+            if (lowerText.contains(entry.source.toLowerCase())) {
+                matching.add(entry);
+            }
+        }
+        // Sort by source length descending — longer (more specific) matches first
+        matching.sort((a, b) -> Integer.compare(b.source.length(), a.source.length()));
+        if (matching.size() > GLOSSARY_MAX_ENTRIES) {
+            matching = matching.subList(0, GLOSSARY_MAX_ENTRIES);
+        }
+        return matching;
+    }
+
+    /**
+     * Formats matching glossary entries into a bullet list for the system prompt.
+     */
+    private static String formatGlossaryPrompt(List<GlossaryEntry> entries, int mode) {
+        if (entries.isEmpty()) return "";
+
+        StringBuilder sb = new StringBuilder();
+        if (mode == GLOSSARY_MODE_STRICT) {
+            sb.append("\n\nStrict glossary — you MUST use these exact translations:\n");
+        } else {
+            sb.append("\n\nReference glossary — use judgment. Do NOT apply entries blindly "
+                + "(e.g., if glossary has \"金色 → gold color\" and the text contains "
+                + "\"白金色\", still translate \"白金色\" as \"platinum color\"):\n");
+        }
+
+        for (GlossaryEntry e : entries) {
+            sb.append("- ").append(e.source).append(" → ").append(e.target);
+            if (!e.comment.isEmpty()) {
+                sb.append("  [").append(e.comment).append("]");
+            }
+            sb.append("\n");
+        }
+        return sb.toString();
     }
 }
