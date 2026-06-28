@@ -155,4 +155,30 @@ public class DeepSeekTranslateTest {
         ObjectMapper mapper = new ObjectMapper();
         assertEquals(mapper.readTree(expected), mapper.readTree(json));
     }
+
+    @Test
+    public void contextSegmentsEnabledDoesNotCrashWithoutProject() throws Exception {
+        Preferences.setPreference(DeepSeekTranslate.ALLOW_DEEPSEEK_TRANSLATE, true);
+        Preferences.setPreference(DeepSeekTranslate.PROPERTY_MODEL, "deepseek-v4-flash");
+        Preferences.setPreference(DeepSeekTranslate.PROPERTY_TEMPERATURE, "0.3");
+        Preferences.setPreference(DeepSeekTranslate.PROPERTY_DYNAMIC_TEMPERATURE, false);
+        Preferences.setPreference(DeepSeekTranslate.PROPERTY_CONTEXT_SEGMENTS, 2);
+
+        DeepSeekTranslate translate = new DeepSeekTranslate();
+        // Should not throw — when no project is open, context is simply skipped
+        String json = translate.createJsonRequest(new Language("EN"), new Language("DE"), "Hello world");
+
+        String expected = "{"
+            + "\"messages\":["
+            + "{\"content\":\"You are a professional translation engine for OmegaT. "
+                + "Translate from en to de. Preserve tags, placeholders, and line breaks. "
+                + "Return only the translated text.\",\"role\":\"system\"},"
+                + "{\"content\":\"Hello world\",\"role\":\"user\"}],"
+                + "\"model\":\"deepseek-v4-flash\","
+                + "\"stream\":false,"
+                + "\"temperature\":0.3}";
+
+        ObjectMapper mapper = new ObjectMapper();
+        assertEquals(mapper.readTree(expected), mapper.readTree(json));
+    }
 }

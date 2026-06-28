@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Dictionary;
 import java.util.Hashtable;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
@@ -28,6 +29,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.omegat.core.Core;
+import org.omegat.core.data.SourceTextEntry;
+import org.omegat.core.data.TMXEntry;
 import org.omegat.core.machinetranslators.BaseCachedTranslate;
 import org.omegat.core.machinetranslators.BaseTranslate;
 import org.omegat.core.machinetranslators.MachineTranslateError;
@@ -57,6 +60,11 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
     private static final int GLOSSARY_MODE_DEFAULT = GLOSSARY_MODE_NONE;
     private static final int GLOSSARY_MAX_ENTRIES = 20;
+
+    /** Number of surrounding segments (above/below) to send as context to the AI */
+    public static final String PROPERTY_CONTEXT_SEGMENTS = "deepseek.api.context_segments";
+    private static final int CONTEXT_SEGMENTS_DEFAULT = 0;
+    private static final int CONTEXT_SEGMENTS_MAX = 3;
 
     private static final String MODEL_DEEPSEEK_V4_PRO = "deepseek-v4-pro";
     private static final String MODEL_DEEPSEEK_V4_FLASH = "deepseek-v4-flash";
@@ -115,7 +123,14 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
         String translated = extractTranslation(response);
         translated = BaseTranslate.unescapeHTML(translated);
-        return cleanSpacesAroundTags(translated, text);
+        translated = cleanSpacesAroundTags(translated, text);
+
+        // Cache this translation so future segments can reference it for continuity
+        if (translated != null && !translated.isEmpty()) {
+            translationCache.put(text, translated);
+        }
+
+        return translated;
     }
 
     @Override
@@ -134,6 +149,15 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
             BUNDLE.getString("MT_ENGINE_DEEPSEEK_GLOSSARY_MODE_STRICT")
         });
         glossaryComboBox.setSelectedIndex(glossaryMode);
+
+        // Context segments combo box (0-3 surrounding segments)
+        int contextSegments = getContextSegments();
+        String[] contextOptions = new String[CONTEXT_SEGMENTS_MAX + 1];
+        for (int i = 0; i <= CONTEXT_SEGMENTS_MAX; i++) {
+            contextOptions[i] = String.valueOf(i);
+        }
+        JComboBox<String> contextComboBox = new JComboBox<>(contextOptions);
+        contextComboBox.setSelectedIndex(Math.min(contextSegments, CONTEXT_SEGMENTS_MAX));
 
         // Slider sub-panel (label + slider)
         JPanel sliderPanel = new JPanel(new BorderLayout(5, 0));
@@ -158,15 +182,17 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
         sliderPanel.add(tempLabel, BorderLayout.WEST);
         sliderPanel.add(temperatureSlider, BorderLayout.CENTER);
-        sliderPanel.setVisible(!dynamicTemp);
+        tempLabel.setEnabled(!dynamicTemp);
+        temperatureSlider.setEnabled(!dynamicTemp);
 
         // Dynamic temperature checkbox
         JCheckBox dynamicCheckBox = new JCheckBox(
                 BUNDLE.getString("MT_ENGINE_DEEPSEEK_DYNAMIC_TEMPERATURE_LABEL"));
         dynamicCheckBox.setSelected(dynamicTemp);
         dynamicCheckBox.addActionListener(e -> {
-            sliderPanel.setVisible(!dynamicCheckBox.isSelected());
-            sliderPanel.getParent().revalidate();
+            boolean enabled = !dynamicCheckBox.isSelected();
+            tempLabel.setEnabled(enabled);
+            temperatureSlider.setEnabled(enabled);
         });
 
         MTConfigDialog dialog = new MTConfigDialog(parent, getName()) {
@@ -178,12 +204,14 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
                 double temperature = sliderToTemperature(temperatureSlider.getValue());
                 boolean dynamic = dynamicCheckBox.isSelected();
                 int glossaryModeIdx = glossaryComboBox.getSelectedIndex();
+                int contextSegmentsVal = contextComboBox.getSelectedIndex();
 
                 setCredential(PROPERTY_API_KEY, apiKey, temporary);
                 Preferences.setPreference(PROPERTY_MODEL, model);
                 Preferences.setPreference(PROPERTY_TEMPERATURE, String.valueOf(temperature));
                 Preferences.setPreference(PROPERTY_DYNAMIC_TEMPERATURE, dynamic);
                 Preferences.setPreference(PROPERTY_GLOSSARY_MODE, glossaryModeIdx);
+                Preferences.setPreference(PROPERTY_CONTEXT_SEGMENTS, contextSegmentsVal);
                 clearCache();
             }
         };
@@ -217,6 +245,14 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         glossaryPanel.add(glossaryLabel, BorderLayout.NORTH);
         glossaryPanel.add(glossaryComboBox, BorderLayout.CENTER);
         dialog.panel.itemsPanel.add(glossaryPanel);
+
+        // Context segments panel
+        JPanel contextPanel = new JPanel(new BorderLayout(5, 0));
+        contextPanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 10, 0));
+        JLabel contextLabel = new JLabel(BUNDLE.getString("MT_ENGINE_DEEPSEEK_CONTEXT_LABEL"));
+        contextPanel.add(contextLabel, BorderLayout.NORTH);
+        contextPanel.add(contextComboBox, BorderLayout.CENTER);
+        dialog.panel.itemsPanel.add(contextPanel);
 
         dialog.show();
     }
@@ -305,6 +341,29 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         return Preferences.getPreferenceDefault(PROPERTY_GLOSSARY_MODE, GLOSSARY_MODE_DEFAULT);
     }
 
+    private int getContextSegments() {
+        return Preferences.getPreferenceDefault(PROPERTY_CONTEXT_SEGMENTS, CONTEXT_SEGMENTS_DEFAULT);
+    }
+
+    /** Tracks sequential translation position for efficient context lookups */
+    private int contextLastPosition = -1;
+    private String contextLastProjectPath = null;
+    private List<String> contextCachedSources = null;
+
+    /** Caches this plugin's own translation output as a fallback for context continuity. */
+    private final Map<String, String> translationCache = new LinkedHashMap<String, String>(128, 0.75f, true) {
+        private static final int MAX_ENTRIES = 512;
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+            return size() > MAX_ENTRIES;
+        }
+    };
+
+    /** Cached map of source text → stored translation from OmegaT's project data.
+     *  This reflects the user's actual (possibly edited) translations, rebuilt
+     *  when the project cache is refreshed. */
+    private Map<String, String> contextStoredTranslations = null;
+
     private static int temperatureToSlider(double temperature) {
         return (int) Math.round(temperature * 10.0);
     }
@@ -332,6 +391,18 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         prompt.append("You are a professional translation engine for OmegaT. Translate from ")
             .append(describeLanguage(sLang)).append(" to ").append(describeLanguage(tLang))
             .append(". Preserve tags, placeholders, and line breaks. Return only the translated text.");
+
+        // Context segments (surrounding text for continuity)
+        int contextCount = getContextSegments();
+        if (contextCount > 0) {
+            int pos = findSourcePosition(text);
+            if (pos >= 0) {
+                String ctx = getContextText(pos, contextCount);
+                if (!ctx.isEmpty()) {
+                    prompt.append(ctx);
+                }
+            }
+        }
 
         int glossaryMode = getGlossaryMode();
         if (glossaryMode != GLOSSARY_MODE_NONE) {
@@ -476,5 +547,142 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
             sb.append("\n");
         }
         return sb.toString();
+    }
+
+    // -------------------------------------------------------------------------
+    // Context segments support (surrounding segment text for better translations)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Builds a cached list of all source texts from the current project,
+     * in file order. Returns empty list when no project is open.
+     */
+    private List<String> getCachedAllSources() {
+        try {
+            if (Core.getProject() == null) return new ArrayList<>();
+            String projectPath = Core.getProject().getProjectProperties().getProjectRoot();
+            // Invalidate cache when project changes
+            if (!projectPath.equals(contextLastProjectPath) || contextCachedSources == null) {
+                contextCachedSources = new ArrayList<>();
+                contextStoredTranslations = new TreeMap<>();
+                List<SourceTextEntry> entries = Core.getProject().getAllEntries();
+                if (entries != null) {
+                    for (SourceTextEntry entry : entries) {
+                        String src = entry.getSrcText();
+                        if (src != null) {
+                            contextCachedSources.add(src);
+                            // Read the user's actual (possibly edited) translation from OmegaT
+                            try {
+                                TMXEntry tmx = Core.getProject().getTranslationInfo(entry);
+                                if (tmx != null && tmx.isTranslated() && tmx.translation != null) {
+                                    contextStoredTranslations.put(src, tmx.translation);
+                                }
+                            } catch (Exception ignored) {
+                                // Translation lookup is best-effort; skip on API mismatch
+                            }
+                        }
+                    }
+                }
+                contextLastProjectPath = projectPath;
+                contextLastPosition = -1;
+                translationCache.clear();
+            }
+        } catch (Exception e) {
+            Log.log(e);
+            return new ArrayList<>();
+        }
+        return contextCachedSources;
+    }
+
+    /**
+     * Finds the position of {@code sourceText} in the project's ordered entry list.
+     * Uses sequential tracking for efficiency — searches forward from the last
+     * found position (since OmegaT typically translates segments in order).
+     */
+    private int findSourcePosition(String sourceText) {
+        List<String> sources = getCachedAllSources();
+        if (sources.isEmpty()) return -1;
+
+        // Search forward from last position + 1 (sequential translation)
+        int start = Math.max(0, contextLastPosition + 1);
+        for (int i = start; i < sources.size(); i++) {
+            if (sourceText.equals(sources.get(i))) {
+                contextLastPosition = i;
+                return i;
+            }
+        }
+        // Fallback: search from beginning (for out-of-order or first-segment access)
+        for (int i = 0; i < start; i++) {
+            if (sourceText.equals(sources.get(i))) {
+                contextLastPosition = i;
+                return i;
+            }
+        }
+        return -1; // not found (e.g., external text, untranslatable segment)
+    }
+
+    /**
+     * Returns context segment texts surrounding the given position.
+     * @param position the position of the current segment
+     * @param count   number of segments to fetch in each direction
+     * @return a formatted string of surrounding segments (empty if none)
+     */
+    private String getContextText(int position, int count) {
+        if (count <= 0 || position < 0) return "";
+        List<String> sources = getCachedAllSources();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n\nSurrounding context for reference (DO NOT translate these — only the current segment):");
+
+        boolean hasAbove = false;
+        int aboveStart = Math.max(0, position - count);
+        for (int i = aboveStart; i < position; i++) {
+            String src = sources.get(i).replace('\n', ' ').replace('\r', ' ');
+            if (src.length() > 200) {
+                src = src.substring(0, 200) + "...";
+            }
+            if (!hasAbove) {
+                sb.append("\n[Above] ");
+                hasAbove = true;
+            }
+            sb.append(src);
+            // Show the user's actual stored translation (from OmegaT project data) first,
+            // falling back to this plugin's own cached output if no stored translation exists.
+            String storedTrg = contextStoredTranslations != null
+                ? contextStoredTranslations.get(sources.get(i)) : null;
+            if (storedTrg == null) {
+                storedTrg = translationCache.get(sources.get(i));
+            }
+            if (storedTrg != null) {
+                String trgSnippet = storedTrg.replace('\n', ' ').replace('\r', ' ');
+                if (trgSnippet.length() > 200) {
+                    trgSnippet = trgSnippet.substring(0, 200) + "...";
+                }
+                sb.append("  →  ").append(trgSnippet);
+            }
+            sb.append(" /// ");
+        }
+        if (hasAbove) {
+            sb.setLength(sb.length() - 5); // trim trailing " /// "
+        }
+
+        boolean hasBelow = false;
+        int belowEnd = Math.min(sources.size(), position + count + 1);
+        for (int i = position + 1; i < belowEnd; i++) {
+            String t = sources.get(i).replace('\n', ' ').replace('\r', ' ');
+            if (t.length() > 200) {
+                t = t.substring(0, 200) + "...";
+            }
+            if (!hasBelow) {
+                sb.append("\n[Below] ");
+                hasBelow = true;
+            }
+            sb.append(t).append(" /// ");
+        }
+        if (hasBelow) {
+            sb.setLength(sb.length() - 5);
+        }
+
+        return (hasAbove || hasBelow) ? sb.toString() : "";
     }
 }
