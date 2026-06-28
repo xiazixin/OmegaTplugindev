@@ -1,4 +1,4 @@
-# DeepSeek OmegaT Plugin ![version](https://img.shields.io/badge/version-1.4.0-blue)
+# DeepSeek OmegaT Plugin ![version](https://img.shields.io/badge/version-1.4.1-blue)
 
 This plugin adds DeepSeek as a machine translation provider in OmegaT.
 
@@ -87,6 +87,10 @@ Context segments are truncated to the configured character limit (200–1000, or
 - When no OmegaT project is open, glossary and context features are silently skipped with no errors.
 
 ## Changelog
+
+### v1.4.1
+- Configurable context character limit (200/400/600/800/1000/No limit) instead of hardcoded 600
+- Temperature slider fades (greys out) instead of hiding with Dynamic Temperature
 
 ### v1.4.0
 - **Context segments** — send surrounding segments (above/below) to the AI for narrative continuity
