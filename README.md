@@ -1,4 +1,6 @@
-# DeepSeek OmegaT Plugin ![version](https://img.shields.io/badge/version-1.4.1-blue)
+# DeepSeek OmegaT Plugin (Dev) ![version](https://img.shields.io/badge/version-1.4.1--dev-orange)
+
+> ⚠️ **Development fork** — this is a development build with experimental features and debug tooling. For the stable release, see the [upstream repository](https://github.com/xiazixin/deepseek-omegat-plugin).
 
 This plugin adds DeepSeek as a machine translation provider in OmegaT.
 
@@ -9,6 +11,7 @@ This plugin adds DeepSeek as a machine translation provider in OmegaT.
 - Configurable model selection, temperature, and dynamic temperature.
 - **Glossary support** — automatically reads OmegaT project glossaries and passes matching entries (with comments) to the AI as translation hints.
 - **Context segments** — optionally sends surrounding segments (above/below) to the AI for better continuity and tone consistency across sentences.
+- **Debug mode** — when enabled, logs the full JSON request and response to OmegaT's log for troubleshooting.
 
 ## Requirements
 
@@ -49,6 +52,7 @@ Open OmegaT's machine translation settings and configure the DeepSeek engine.
 | Glossary | None | **None** — glossary disabled. **Reference** — glossary entries are sent as hints; the AI uses judgment and won't blindly override compound terms (e.g. `白金色` stays `platinum color` even with `金色 → gold color` in the glossary). **Strict** — glossary entries must be used exactly. |
 | Context segments | 0 | Number of surrounding segments (above and below) to include as context. 0 = disabled, up to 3. Helps AI maintain narrative continuity and tone. |
 | Context char limit | 400 | Max characters per context segment before truncation. Options: 200, 400, 600, 800, 1000, or No limit. Adjust based on your segment size. |
+| Debug mode | Off | When enabled, logs the full JSON request sent to DeepSeek and the full JSON response to OmegaT's log (`[DeepSeek Debug] >>>` / `<<<`). Useful for troubleshooting prompts, glossary injection, and API errors. |
 
 You can also override settings with system properties:
 
@@ -87,6 +91,10 @@ Context segments are truncated to the configured character limit (200–1000, or
 - When no OmegaT project is open, glossary and context features are silently skipped with no errors.
 
 ## Changelog
+
+### v1.4.1-dev (development fork)
+- **Debug mode** — new checkbox in settings to log raw API requests & responses for troubleshooting
+- Marked as development build (`-dev` suffix on version, `(Dev)` in plugin name)
 
 ### v1.4.1
 - Configurable context character limit (200/400/600/800/1000/No limit) instead of hardcoded 200

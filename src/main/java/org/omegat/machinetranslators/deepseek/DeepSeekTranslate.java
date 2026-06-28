@@ -68,6 +68,9 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
     /** Max characters per context segment before truncation */
     public static final String PROPERTY_CONTEXT_TRUNCATION = "deepseek.api.context_truncation";
+
+    /** Debug mode — logs raw API request and response for development troubleshooting */
+    public static final String PROPERTY_DEBUG_MODE = "deepseek.api.debug_mode";
     private static final int CONTEXT_TRUNCATION_DEFAULT = 400;
     private static final int[] CONTEXT_TRUNCATION_OPTIONS = { 200, 400, 600, 800, 1000, 0 };
 
@@ -115,11 +118,25 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         Map<String, String> headers = new TreeMap<>();
         headers.put("Authorization", "Bearer " + apiKey);
 
+        if (isDebugMode()) {
+            Log.log("\n[DeepSeek Debug] >>> REQUEST to " + getBaseUrl() + CHAT_COMPLETIONS_PATH);
+            Log.log("[DeepSeek Debug] >>> " + request);
+        }
+
         String response;
         try {
             response = HttpConnectionUtils.postJSON(getBaseUrl() + CHAT_COMPLETIONS_PATH, request, headers);
         } catch (HttpConnectionUtils.ResponseError e) {
+            if (isDebugMode()) {
+                Log.log("\n[DeepSeek Debug] <<< ERROR RESPONSE:");
+                Log.log("[DeepSeek Debug] <<< " + e.body);
+            }
             throw new MachineTranslateError(extractErrorMessage(e.body));
+        }
+
+        if (isDebugMode()) {
+            Log.log("\n[DeepSeek Debug] <<< RESPONSE:");
+            Log.log("[DeepSeek Debug] <<< " + response);
         }
 
         if (response == null) {
@@ -174,6 +191,11 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
             BUNDLE.getString("MT_ENGINE_DEEPSEEK_CONTEXT_TRUNCATION_NOLIMIT");
         JComboBox<String> truncationComboBox = new JComboBox<>(truncationOptions);
         truncationComboBox.setSelectedIndex(truncationToIndex(truncation));
+
+        // Debug mode checkbox (development builds only)
+        JCheckBox debugCheckBox = new JCheckBox(
+                BUNDLE.getString("MT_ENGINE_DEEPSEEK_DEBUG_MODE_LABEL"));
+        debugCheckBox.setSelected(isDebugMode());
 
         // Slider sub-panel (label + slider)
         JPanel sliderPanel = new JPanel(new BorderLayout(5, 0));
@@ -231,6 +253,7 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
                 Preferences.setPreference(PROPERTY_GLOSSARY_MODE, glossaryModeIdx);
                 Preferences.setPreference(PROPERTY_CONTEXT_SEGMENTS, contextSegmentsVal);
                 Preferences.setPreference(PROPERTY_CONTEXT_TRUNCATION, truncationVal);
+                Preferences.setPreference(PROPERTY_DEBUG_MODE, debugCheckBox.isSelected());
                 clearCache();
             }
         };
@@ -280,6 +303,12 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         truncationPanel.add(truncationLabel, BorderLayout.NORTH);
         truncationPanel.add(truncationComboBox, BorderLayout.CENTER);
         dialog.panel.itemsPanel.add(truncationPanel);
+
+        // Debug mode panel (checkbox declared above for onConfirm capture)
+        JPanel debugPanel = new JPanel(new BorderLayout(5, 0));
+        debugPanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 10, 0));
+        debugPanel.add(debugCheckBox, BorderLayout.CENTER);
+        dialog.panel.itemsPanel.add(debugPanel);
 
         dialog.show();
     }
@@ -374,6 +403,10 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
     private int getContextTruncation() {
         return Preferences.getPreferenceDefault(PROPERTY_CONTEXT_TRUNCATION, CONTEXT_TRUNCATION_DEFAULT);
+    }
+
+    private boolean isDebugMode() {
+        return Preferences.isPreference(PROPERTY_DEBUG_MODE);
     }
 
     private static int truncationToIndex(int value) {
