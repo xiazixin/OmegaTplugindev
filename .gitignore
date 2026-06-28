@@ -10,6 +10,10 @@ out/
 *.iws
 *.ipr
 .vscode/
+.replit
+.fleet
+.run
+.venv
 
 # OS generated
 .DS_Store
@@ -36,3 +40,28 @@ replay_pid*
 # Test output
 test-output/
 bin/
+
+# emacs backup files
+*~
+
+# MacOS system file
+.DS_Store
+
+# AI related files
+AGENTS.md
+.codex/
+.claude/
+CLAUDE.md
+.gemini/
+GEMINI.md
+.cursor/
+.windsurf/
+.agents/
+.aiconfig
+.aider*
+.codeium/
+.continue/
+.gateway/
+.github/copilot-instructions.md
+.supermaven/
+.idx/
