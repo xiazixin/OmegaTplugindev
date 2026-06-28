@@ -1,0 +1,67 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+out/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.replit
+.fleet
+.run
+.venv
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Java
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+hs_err_pid*
+replay_pid*
+
+# Test output
+test-output/
+bin/
+
+# emacs backup files
+*~
+
+# MacOS system file
+.DS_Store
+
+# AI related files
+AGENTS.md
+.codex/
+.claude/
+CLAUDE.md
+.gemini/
+GEMINI.md
+.cursor/
+.windsurf/
+.agents/
+.aiconfig
+.aider*
+.codeium/
+.continue/
+.gateway/
+.github/copilot-instructions.md
+.supermaven/
+.idx/
