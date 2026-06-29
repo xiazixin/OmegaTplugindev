@@ -12,6 +12,7 @@ This plugin adds DeepSeek as a machine translation provider in OmegaT.
 - **Auto-insert** — when active, automatically fills the target segment with the machine translation result, eliminating the need to press Ctrl+M for every segment.
 - **Auto-confirm** — when active, also commits the translation and advances to the next segment (use with caution).
 - **Auto-glossary** — the AI suggests key terminology pairs with each translation. Entries are automatically saved to `deepseek_auto_glossary.txt` in the project's glossary folder — building your glossary hands-free.
+- **Self-review agent** — a second AI pass reviews each translation for tag preservation, glossary consistency, accuracy, and fluency — correcting errors automatically.
 - **Hotkey toggle** — press **Ctrl+Shift+M** anytime to turn auto-mode on/off. The checkboxes above define *what* auto-mode does; the hotkey simply switches it on or off without changing your settings.
 
 ## Requirements

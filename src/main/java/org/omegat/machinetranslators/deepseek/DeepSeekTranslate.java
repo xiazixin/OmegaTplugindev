@@ -61,6 +61,7 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     public static final String PROPERTY_AUTO_ACTIVE = "deepseek.api.auto_active";
 
     public static final String PROPERTY_AUTO_GLOSSARY = "deepseek.api.auto_glossary";
+    public static final String PROPERTY_SELF_REVIEW = "deepseek.api.self_review";
 
     /** Glossary disabled */
     public static final int GLOSSARY_MODE_NONE = 0;
@@ -152,6 +153,16 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
         translated = BaseTranslate.unescapeHTML(translated);
         translated = cleanSpacesAroundTags(translated, sourceText);
+
+        // Self-review: second API pass to catch errors and enforce glossary
+        if (isSelfReview() && translated != null && !translated.isEmpty()) {
+            String reviewed = selfReview(sLang, tLang, sourceText, translated);
+            if (reviewed != null && !reviewed.isEmpty()) {
+                translated = reviewed;
+            } else {
+                Log.log("DeepSeek self-review returned empty — keeping original translation");
+            }
+        }
 
         // Cache this translation so future segments can reference it for continuity
         if (translated != null && !translated.isEmpty()) {
@@ -258,6 +269,99 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         } catch (Exception e) {
             Log.log(e);
         }
+    }
+
+    /**
+     * Self-review agent: sends the translation back to the API for a quality check.
+     * The AI reviews tag preservation, glossary consistency, accuracy, and fluency.
+     * Returns the corrected translation, or the original if no issues found.
+     */
+    private String selfReview(Language sLang, Language tLang, String sourceText, String translation) {
+        try {
+            String apiKey = getApiKey();
+            if (apiKey.isEmpty()) return translation;
+
+            List<Map<String, String>> messages = new ArrayList<>();
+            messages.add(message("system", buildReviewerSystemPrompt(sLang, tLang)));
+            messages.add(message("user", buildReviewerUserMessage(sLang, tLang, sourceText, translation)));
+
+            Map<String, Object> request = new TreeMap<>();
+            request.put("messages", messages);
+            request.put("model", getModel());
+            request.put("stream", false);
+            if (!isDynamicTemperature()) {
+                request.put("temperature", 0.2); // Lower temp for review — be precise
+            }
+
+            Map<String, String> headers = new TreeMap<>();
+            headers.put("Authorization", "Bearer " + apiKey);
+
+            String response = HttpConnectionUtils.postJSON(
+                    getBaseUrl() + CHAT_COMPLETIONS_PATH, MAPPER.writeValueAsString(request), headers);
+            if (response == null) return translation;
+
+            return extractTranslation(response);
+        } catch (Exception e) {
+            Log.log("DeepSeek self-review failed — keeping original: " + e.getMessage());
+            return translation;
+        }
+    }
+
+    /**
+     * Builds the system prompt for the reviewer agent.
+     */
+    private String buildReviewerSystemPrompt(Language sLang, Language tLang) {
+        return "You are a translation reviewer for OmegaT. Your job is to review a machine translation "
+            + "from " + describeLanguage(sLang) + " to " + describeLanguage(tLang) + " "
+            + "and correct any errors. Be conservative — only change what is clearly wrong.\n\n"
+            + "Check for:\n"
+            + "1. TAG PRESERVATION — all tags, placeholders, and formatting codes must be exactly as in the source\n"
+            + "2. GLOSSARY CONSISTENCY — if glossary entries are provided, the translation must follow them\n"
+            + "3. ACCURACY — the meaning must be faithful to the source; no omissions or additions\n"
+            + "4. FLUENCY — the translation must read naturally in " + describeLanguage(tLang) + "\n\n"
+            + "Return ONLY the final translation text. "
+            + "If the translation is already correct, return it exactly as provided. "
+            + "Do NOT rephrase for style alone — only fix actual problems.";
+    }
+
+    /**
+     * Builds the user message for the reviewer agent, including the source,
+     * initial translation, and any relevant glossary entries and context.
+     */
+    private String buildReviewerUserMessage(Language sLang, Language tLang, String sourceText, String translation) {
+        StringBuilder msg = new StringBuilder();
+        msg.append("Source (").append(describeLanguage(sLang)).append("):\n")
+           .append(sourceText).append("\n\n");
+        msg.append("Translation (").append(describeLanguage(tLang)).append("):\n")
+           .append(translation).append("\n");
+
+        // Include matching glossary entries for the reviewer to check against
+        List<GlossaryEntry> matching = findMatchingEntries(sourceText);
+        if (!matching.isEmpty()) {
+            msg.append("\nGlossary entries the translation should follow:\n");
+            for (GlossaryEntry e : matching) {
+                msg.append("- ").append(e.source).append(" → ").append(e.target);
+                if (!e.comment.isEmpty()) {
+                    msg.append("  [").append(e.comment).append("]");
+                }
+                msg.append("\n");
+            }
+        }
+
+        // Include surrounding context for continuity check
+        int contextCount = getContextSegments();
+        if (contextCount > 0) {
+            int pos = findSourcePosition(sourceText);
+            if (pos >= 0) {
+                String ctx = getContextText(pos, contextCount);
+                if (!ctx.isEmpty()) {
+                    msg.append("\nSurrounding context (ensure tone consistency):\n");
+                    msg.append(ctx);
+                }
+            }
+        }
+
+        return msg.toString();
     }
 
     /**
@@ -390,6 +494,13 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         autoGlossaryCheckBox.setSelected(autoGlossary);
         autoGlossaryCheckBox.setToolTipText(BUNDLE.getString("MT_ENGINE_DEEPSEEK_AUTO_GLOSSARY_TOOLTIP"));
 
+        // Self-review checkbox (declared before dialog for onConfirm capture)
+        boolean selfReview = isSelfReview();
+        JCheckBox selfReviewCheckBox = new JCheckBox(
+                BUNDLE.getString("MT_ENGINE_DEEPSEEK_SELF_REVIEW_LABEL"));
+        selfReviewCheckBox.setSelected(selfReview);
+        selfReviewCheckBox.setToolTipText(BUNDLE.getString("MT_ENGINE_DEEPSEEK_SELF_REVIEW_TOOLTIP"));
+
         MTConfigDialog dialog = new MTConfigDialog(parent, getName()) {
             @Override
             protected void onConfirm() {
@@ -414,6 +525,7 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
                 Preferences.setPreference(PROPERTY_AUTO_CONFIRM,
                         autoInsertCheckBox.isSelected() && autoConfirmCheckBox.isSelected());
                 Preferences.setPreference(PROPERTY_AUTO_GLOSSARY, autoGlossaryCheckBox.isSelected());
+                Preferences.setPreference(PROPERTY_SELF_REVIEW, selfReviewCheckBox.isSelected());
                 clearCache();
             }
         };
@@ -479,6 +591,12 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         autoGlossaryPanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 10, 0));
         autoGlossaryPanel.add(autoGlossaryCheckBox, BorderLayout.NORTH);
         dialog.panel.itemsPanel.add(autoGlossaryPanel);
+
+        // Self-review panel
+        JPanel selfReviewPanel = new JPanel(new BorderLayout(5, 0));
+        selfReviewPanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 10, 0));
+        selfReviewPanel.add(selfReviewCheckBox, BorderLayout.NORTH);
+        dialog.panel.itemsPanel.add(selfReviewPanel);
 
         dialog.show();
     }
@@ -593,6 +711,10 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
     private boolean isAutoGlossary() {
         return Preferences.isPreference(PROPERTY_AUTO_GLOSSARY);
+    }
+
+    private boolean isSelfReview() {
+        return Preferences.isPreference(PROPERTY_SELF_REVIEW);
     }
 
     private static int truncationToIndex(int value) {
