@@ -6,7 +6,9 @@ import java.awt.Window;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileWriter;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Dictionary;
@@ -23,6 +25,7 @@ import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JSlider;
+import javax.swing.SwingUtilities;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -34,6 +37,7 @@ import org.omegat.core.data.TMXEntry;
 import org.omegat.core.machinetranslators.BaseCachedTranslate;
 import org.omegat.core.machinetranslators.BaseTranslate;
 import org.omegat.core.machinetranslators.MachineTranslateError;
+import org.omegat.gui.editor.IEditor;
 import org.omegat.gui.exttrans.MTConfigDialog;
 import org.omegat.util.HttpConnectionUtils;
 import org.omegat.util.Language;
@@ -51,6 +55,13 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     public static final String PROPERTY_DYNAMIC_TEMPERATURE = "deepseek.api.dynamic_temperature";
     public static final String PROPERTY_GLOSSARY_MODE = "deepseek.api.glossary.mode";
 
+    public static final String PROPERTY_AUTO_INSERT = "deepseek.api.auto_insert";
+    public static final String PROPERTY_AUTO_CONFIRM = "deepseek.api.auto_confirm";
+    /** Master toggle controlled by Ctrl+Shift+M hotkey — does NOT change the checkboxes. */
+    public static final String PROPERTY_AUTO_ACTIVE = "deepseek.api.auto_active";
+
+    public static final String PROPERTY_AUTO_GLOSSARY = "deepseek.api.auto_glossary";
+
     /** Glossary disabled */
     public static final int GLOSSARY_MODE_NONE = 0;
     /** Glossary as reference — AI uses judgment, does not blindly follow */
@@ -60,6 +71,8 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
     private static final int GLOSSARY_MODE_DEFAULT = GLOSSARY_MODE_NONE;
     private static final int GLOSSARY_MAX_ENTRIES = 20;
+    private static final String GLOSSARY_MARKER_START = "[GLOSSARY]";
+    private static final String GLOSSARY_MARKER_END = "[/GLOSSARY]";
 
     /** Number of surrounding segments (above/below) to send as context to the AI */
     public static final String PROPERTY_CONTEXT_SEGMENTS = "deepseek.api.context_segments";
@@ -105,13 +118,13 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
     }
 
     @Override
-    protected String translate(Language sLang, Language tLang, String text) throws Exception {
+    protected String translate(Language sLang, Language tLang, String sourceText) throws Exception {
         String apiKey = getApiKey();
         if (apiKey.isEmpty()) {
             throw new MachineTranslateError(BUNDLE.getString("MT_ENGINE_DEEPSEEK_API_KEY_NOTFOUND"));
         }
 
-        String request = createJsonRequest(sLang, tLang, text);
+        String request = createJsonRequest(sLang, tLang, sourceText);
         Map<String, String> headers = new TreeMap<>();
         headers.put("Authorization", "Bearer " + apiKey);
 
@@ -127,15 +140,157 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         }
 
         String translated = extractTranslation(response);
+
+        // Parse and save auto-glossary entries before further processing
+        if (isAutoGlossary()) {
+            String glossaryBlock = extractGlossaryBlock(translated);
+            if (!glossaryBlock.isEmpty()) {
+                saveGlossaryEntries(sourceText, glossaryBlock);
+            }
+            translated = stripGlossaryBlock(translated);
+        }
+
         translated = BaseTranslate.unescapeHTML(translated);
-        translated = cleanSpacesAroundTags(translated, text);
+        translated = cleanSpacesAroundTags(translated, sourceText);
 
         // Cache this translation so future segments can reference it for continuity
         if (translated != null && !translated.isEmpty()) {
-            translationCache.put(text, translated);
+            translationCache.put(sourceText, translated);
+        }
+
+        // Auto-insert the translation into the editor if the master toggle is active
+        // and at least one auto feature is enabled in settings
+        if (translated != null && !translated.isEmpty()
+                && isAutoActive() && (isAutoInsert() || isAutoConfirm())) {
+            final String finalTranslation = translated;
+            SwingUtilities.invokeLater(() -> autoInsertTranslation(finalTranslation));
         }
 
         return translated;
+    }
+
+    /**
+     * Extracts the [GLOSSARY]...[/GLOSSARY] block from the AI response.
+     * Returns the raw text between the markers, or empty string if not present.
+     */
+    private static String extractGlossaryBlock(String content) {
+        int start = content.indexOf(GLOSSARY_MARKER_START);
+        int end = content.indexOf(GLOSSARY_MARKER_END);
+        if (start < 0 || end < start) {
+            return "";
+        }
+        return content.substring(start + GLOSSARY_MARKER_START.length(), end).trim();
+    }
+
+    /**
+     * Strips the [GLOSSARY]...[/GLOSSARY] block (and surrounding whitespace)
+     * from the AI response, returning only the clean translation.
+     */
+    private static String stripGlossaryBlock(String content) {
+        int start = content.indexOf(GLOSSARY_MARKER_START);
+        int end = content.indexOf(GLOSSARY_MARKER_END);
+        if (start < 0 || end < start) {
+            return content;
+        }
+        StringBuilder sb = new StringBuilder();
+        if (start > 0) {
+            String before = content.substring(0, start);
+            sb.append(before.replaceAll("\\s+$", ""));
+        }
+        if (end + GLOSSARY_MARKER_END.length() < content.length()) {
+            sb.append(content.substring(end + GLOSSARY_MARKER_END.length()));
+        }
+        return sb.toString().trim();
+    }
+
+    /**
+     * Parses glossary entries from the AI response block and writes them
+     * to the project's glossary folder in OmegaT's tab-separated format.
+     */
+    private void saveGlossaryEntries(String sourceText, String glossaryBlock) {
+        try {
+            if (Core.getProject() == null) return;
+            String glossaryRoot = Core.getProject().getProjectProperties().getGlossaryRoot();
+            if (glossaryRoot == null || glossaryRoot.isEmpty()) return;
+
+            File glossaryDir = new File(glossaryRoot);
+            if (!glossaryDir.isDirectory() && !glossaryDir.mkdirs()) return;
+
+            File autoFile = new File(glossaryDir, "deepseek_auto_glossary.txt");
+
+            String[] lines = glossaryBlock.split("\\n");
+            int added = 0;
+            try (PrintWriter writer = new PrintWriter(new FileWriter(autoFile, true))) {
+                for (String line : lines) {
+                    line = line.trim();
+                    if (line.isEmpty() || line.startsWith("#")) continue;
+
+                    // Split comment first: "source = target ;; comment"
+                    String comment = "";
+                    int commentSep = line.indexOf(";;");
+                    if (commentSep >= 0) {
+                        comment = line.substring(commentSep + 2).trim();
+                        line = line.substring(0, commentSep).trim();
+                    }
+
+                    // Parse "source = target" or "source → target" format
+                    String[] parts = line.split("\\s*[=→]\\s*", 2);
+                    if (parts.length < 2) continue;
+
+                    String src = parts[0].trim();
+                    String tgt = parts[1].trim();
+                    if (src.isEmpty() || tgt.isEmpty()) continue;
+                    if (src.equalsIgnoreCase(tgt)) continue;
+                    if (sourceText.equals(src)) continue;
+
+                    // Write in OmegaT glossary format: source\ttarget\tcomment
+                    if (comment.isEmpty()) {
+                        writer.println(src + "\t" + tgt);
+                    } else {
+                        writer.println(src + "\t" + tgt + "\t" + comment);
+                    }
+                    added++;
+                }
+            }
+            if (added > 0) {
+                Log.log("DeepSeek auto-glossary: added " + added + " entry/entries");
+            }
+        } catch (Exception e) {
+            Log.log(e);
+        }
+    }
+
+    /**
+     * Automatically inserts the translated text into the current segment's target field.
+     * If auto-confirm is also enabled, commits the translation and moves to the next
+     * untranslated segment.
+     * <p>
+     * Must be called from the Swing UI thread.
+     */
+    private void autoInsertTranslation(String translated) {
+        try {
+            IEditor editor = Core.getEditor();
+            if (editor == null) {
+                return;
+            }
+            SourceTextEntry currentEntry = editor.getCurrentEntry();
+            if (currentEntry == null) {
+                return;
+            }
+            // Only auto-insert if the target is empty (don't overwrite existing translations)
+            String currentTranslation = editor.getCurrentTranslation();
+            if (currentTranslation != null && !currentTranslation.trim().isEmpty()) {
+                return;
+            }
+            editor.replaceEditText(translated, getName());
+            if (isAutoConfirm()) {
+                // commitAndDeactivate saves the translation, nextUntranslatedEntry advances
+                editor.commitAndDeactivate();
+                editor.nextUntranslatedEntry();
+            }
+        } catch (Exception e) {
+            Log.log(e);
+        }
     }
 
     @Override
@@ -211,6 +366,30 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
             temperatureSlider.setEnabled(enabled);
         });
 
+        // Auto-insert and auto-confirm checkboxes (declared before dialog for onConfirm capture)
+        boolean autoInsert = isAutoInsert();
+        boolean autoConfirm = isAutoConfirm();
+        JCheckBox autoInsertCheckBox = new JCheckBox(
+                BUNDLE.getString("MT_ENGINE_DEEPSEEK_AUTO_INSERT_LABEL"));
+        autoInsertCheckBox.setSelected(autoInsert);
+        autoInsertCheckBox.setToolTipText(BUNDLE.getString("MT_ENGINE_DEEPSEEK_AUTO_INSERT_TOOLTIP"));
+
+        JCheckBox autoConfirmCheckBox = new JCheckBox(
+                BUNDLE.getString("MT_ENGINE_DEEPSEEK_AUTO_CONFIRM_LABEL"));
+        autoConfirmCheckBox.setSelected(autoConfirm);
+        autoConfirmCheckBox.setToolTipText(BUNDLE.getString("MT_ENGINE_DEEPSEEK_AUTO_CONFIRM_TOOLTIP"));
+        autoConfirmCheckBox.setEnabled(autoInsert);
+
+        autoInsertCheckBox.addActionListener(e ->
+                autoConfirmCheckBox.setEnabled(autoInsertCheckBox.isSelected()));
+
+        // Auto-glossary checkbox (declared before dialog for onConfirm capture)
+        boolean autoGlossary = isAutoGlossary();
+        JCheckBox autoGlossaryCheckBox = new JCheckBox(
+                BUNDLE.getString("MT_ENGINE_DEEPSEEK_AUTO_GLOSSARY_LABEL"));
+        autoGlossaryCheckBox.setSelected(autoGlossary);
+        autoGlossaryCheckBox.setToolTipText(BUNDLE.getString("MT_ENGINE_DEEPSEEK_AUTO_GLOSSARY_TOOLTIP"));
+
         MTConfigDialog dialog = new MTConfigDialog(parent, getName()) {
             @Override
             protected void onConfirm() {
@@ -231,6 +410,10 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
                 Preferences.setPreference(PROPERTY_GLOSSARY_MODE, glossaryModeIdx);
                 Preferences.setPreference(PROPERTY_CONTEXT_SEGMENTS, contextSegmentsVal);
                 Preferences.setPreference(PROPERTY_CONTEXT_TRUNCATION, truncationVal);
+                Preferences.setPreference(PROPERTY_AUTO_INSERT, autoInsertCheckBox.isSelected());
+                Preferences.setPreference(PROPERTY_AUTO_CONFIRM,
+                        autoInsertCheckBox.isSelected() && autoConfirmCheckBox.isSelected());
+                Preferences.setPreference(PROPERTY_AUTO_GLOSSARY, autoGlossaryCheckBox.isSelected());
                 clearCache();
             }
         };
@@ -280,6 +463,22 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         truncationPanel.add(truncationLabel, BorderLayout.NORTH);
         truncationPanel.add(truncationComboBox, BorderLayout.CENTER);
         dialog.panel.itemsPanel.add(truncationPanel);
+
+        // Auto-insert / Auto-confirm panel
+        JPanel autoInsertPanel = new JPanel(new BorderLayout(5, 0));
+        autoInsertPanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 5, 0));
+        autoInsertPanel.add(autoInsertCheckBox, BorderLayout.NORTH);
+        JPanel autoConfirmWrapper = new JPanel(new BorderLayout());
+        autoConfirmWrapper.setBorder(BorderFactory.createEmptyBorder(2, 20, 0, 0));
+        autoConfirmWrapper.add(autoConfirmCheckBox, BorderLayout.CENTER);
+        autoInsertPanel.add(autoConfirmWrapper, BorderLayout.CENTER);
+        dialog.panel.itemsPanel.add(autoInsertPanel);
+
+        // Auto-glossary panel
+        JPanel autoGlossaryPanel = new JPanel(new BorderLayout(5, 0));
+        autoGlossaryPanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 10, 0));
+        autoGlossaryPanel.add(autoGlossaryCheckBox, BorderLayout.NORTH);
+        dialog.panel.itemsPanel.add(autoGlossaryPanel);
 
         dialog.show();
     }
@@ -376,6 +575,26 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         return Preferences.getPreferenceDefault(PROPERTY_CONTEXT_TRUNCATION, CONTEXT_TRUNCATION_DEFAULT);
     }
 
+    private boolean isAutoInsert() {
+        return Preferences.isPreference(PROPERTY_AUTO_INSERT);
+    }
+
+    private boolean isAutoConfirm() {
+        return Preferences.isPreference(PROPERTY_AUTO_CONFIRM);
+    }
+
+    /**
+     * Returns whether the master auto-toggle is currently active.
+     * This is controlled by the Ctrl+Shift+M hotkey, not by the settings checkboxes.
+     */
+    static boolean isAutoActive() {
+        return Preferences.isPreference(PROPERTY_AUTO_ACTIVE);
+    }
+
+    private boolean isAutoGlossary() {
+        return Preferences.isPreference(PROPERTY_AUTO_GLOSSARY);
+    }
+
     private static int truncationToIndex(int value) {
         for (int i = 0; i < CONTEXT_TRUNCATION_OPTIONS.length; i++) {
             if (CONTEXT_TRUNCATION_OPTIONS[i] == value) return i;
@@ -432,7 +651,23 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         StringBuilder prompt = new StringBuilder();
         prompt.append("You are a professional translation engine for OmegaT. Translate from ")
             .append(describeLanguage(sLang)).append(" to ").append(describeLanguage(tLang))
-            .append(". Preserve tags, placeholders, and line breaks. Return only the translated text.");
+            .append(". Preserve tags, placeholders, and line breaks.");
+
+        // Auto-glossary: ask AI to suggest terminology pairs
+        if (isAutoGlossary()) {
+            prompt.append(" After translating, identify any key domain-specific terms or phrases "
+                + "that should be added to a translation glossary. Append them in this exact format "
+                + "at the very end:\n\n[GLOSSARY]\n"
+                + "source term = target term\n"
+                + "source term = target term ;; brief usage note or context\n"
+                + "[/GLOSSARY]\n\n"
+                + "Only include non-obvious or specialized terms. "
+                + "Do NOT include common words or phrases where the translation is literal. "
+                + "Add a short comment after ';;' when the usage is context-dependent. "
+                + "If no glossary terms are needed, omit the block entirely.");
+        } else {
+            prompt.append(" Return only the translated text.");
+        }
 
         // Context segments (surrounding text for continuity)
         int contextCount = getContextSegments();
