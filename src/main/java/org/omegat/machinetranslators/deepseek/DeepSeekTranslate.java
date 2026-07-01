@@ -229,6 +229,26 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
             File autoFile = new File(glossaryDir, "deepseek_auto_glossary.txt");
 
+            // Load existing entries from file on first use (prevents cross-session duplicates)
+            if (!glossaryKeysLoaded && autoFile.isFile()) {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(new FileInputStream(autoFile), StandardCharsets.UTF_8))) {
+                    String existingLine;
+                    while ((existingLine = reader.readLine()) != null) {
+                        existingLine = existingLine.trim();
+                        if (existingLine.isEmpty()) continue;
+                        String[] cols = existingLine.split("\t", 2);
+                        if (cols.length >= 2) {
+                            writtenGlossaryKeys.add(
+                                    cols[0].trim().toLowerCase() + "\t" + cols[1].trim().toLowerCase());
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.log(e);
+                }
+            }
+            glossaryKeysLoaded = true;
+
             String[] lines = glossaryBlock.split("\\n");
             int added = 0;
             try (PrintWriter writer = new PrintWriter(new FileWriter(autoFile, true))) {
@@ -253,6 +273,10 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
                     if (src.isEmpty() || tgt.isEmpty()) continue;
                     if (src.equalsIgnoreCase(tgt)) continue;
                     if (sourceText.equals(src)) continue;
+
+                    // Deduplicate: skip if this source→target pair was already written
+                    String dedupKey = src.toLowerCase() + "\t" + tgt.toLowerCase();
+                    if (!writtenGlossaryKeys.add(dedupKey)) continue;
 
                     // Write in OmegaT glossary format: source\ttarget\tcomment
                     if (comment.isEmpty()) {
@@ -366,8 +390,8 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
 
     /**
      * Automatically inserts the translated text into the current segment's target field.
-     * If auto-confirm is also enabled, commits the translation and moves to the next
-     * untranslated segment.
+     * If auto-confirm is also enabled, advances to the next untranslated segment
+     * (nextUntranslatedEntry handles both saving and advancing internally).
      * <p>
      * Must be called from the Swing UI thread.
      */
@@ -387,9 +411,14 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
                 return;
             }
             editor.replaceEditText(translated, getName());
+            // Refresh the "⚡ AUTO" indicator in the status bar
+            if (isAutoActive()) {
+                DeepSeekPlugin.startIndicator();
+            }
             if (isAutoConfirm()) {
-                // commitAndDeactivate saves the translation, nextUntranslatedEntry advances
-                editor.commitAndDeactivate();
+                // Set flag so the entry listener identifies this as auto-navigation
+                expectingAutoActivation = true;
+                // nextUntranslatedEntry internally calls commitAndDeactivate before advancing
                 editor.nextUntranslatedEntry();
             }
         } catch (Exception e) {
@@ -717,6 +746,21 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
         return Preferences.isPreference(PROPERTY_SELF_REVIEW);
     }
 
+    /**
+     * Flag set true just before auto-navigation (nextUntranslatedEntry).
+     * The entry listener uses this to distinguish auto-navigation from
+     * manual clicks — it's set on the Swing thread before navigating
+     * and cleared by the listener when the expected activation fires.
+     */
+    static volatile boolean expectingAutoActivation = false;
+
+    /**
+     * The entry number that auto-mode last navigated to. Used by the
+     * entry listener to detect manual navigation (any activation to
+     * a different entry number = user clicked somewhere else).
+     */
+    static volatile int lastAutoEntryNum = -1;
+
     private static int truncationToIndex(int value) {
         for (int i = 0; i < CONTEXT_TRUNCATION_OPTIONS.length; i++) {
             if (CONTEXT_TRUNCATION_OPTIONS[i] == value) return i;
@@ -746,6 +790,11 @@ public class DeepSeekTranslate extends BaseCachedTranslate {
      *  This reflects the user's actual (possibly edited) translations, rebuilt
      *  when the project cache is refreshed. */
     private Map<String, String> contextStoredTranslations = null;
+
+    /** Tracks auto-glossary entries already written to prevent duplicates. */
+    private final java.util.Set<String> writtenGlossaryKeys = new java.util.HashSet<>();
+    /** Whether the existing glossary file has been loaded into writtenGlossaryKeys. */
+    private boolean glossaryKeysLoaded = false;
 
     private static int temperatureToSlider(double temperature) {
         return (int) Math.round(temperature * 10.0);
